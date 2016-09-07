@@ -27,6 +27,8 @@ import Data.ByteString.Base64.URL (encode, decodeLenient)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
 
+import Data.List
+
 import qualified Crypto.Hash.SHA256 as SHA256
 
 -- Cryptonite stuff
@@ -103,10 +105,15 @@ parseRegistrationData r = Right $ runGet unpackRegistrationData ( LBS.fromStrict
 
 getPubKeyFromCertificate :: BS.ByteString -> Either HuffError ECDSA.PublicKey
 getPubKeyFromCertificate cert = case (decodeASN1' DER cert) of
-  Right certParse -> case (parsePublicKey $ BS.tail $ fromBitString $ certParse !! 34) of
+  Right certParse -> case (findPubKey certParse) of
     Just key -> Right key
     Nothing -> Left PubKeyParsingError
   Left _ -> Left RegistrationCertificateParseError
+
+findPubKey :: Foldable t => t ASN1 -> Maybe ECDSA.PublicKey
+findPubKey parsedCert = case (find (\(BitString (BitArray len _)) -> len == 520) parsedCert) of
+  Just (BitString (BitArray len x)) -> parsePublicKey $ BS.tail x
+  _ -> Nothing
 
 getSignatureBase :: BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString
 getSignatureBase appId clientData keyHandle publicKey = sigBase
@@ -254,4 +261,3 @@ unpackASN1 = do
       return $ BS.concat([pack([asnPadding, asnLen]), asnBody])
 
 fromIntVal (IntVal x) = x
-fromBitString (BitString (BitArray len x)) = x
