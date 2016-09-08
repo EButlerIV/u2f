@@ -1,7 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE DeriveFunctor #-}
+
 module Huff where
 
 import GHC.Generics
@@ -26,7 +24,6 @@ import Data.ByteString (pack)
 import Data.ByteString.Base64.URL (encode, decodeLenient)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
-
 import Data.List
 
 import qualified Crypto.Hash.SHA256 as SHA256
@@ -37,6 +34,21 @@ import Crypto.PubKey.ECC.Types
 import qualified Crypto.PubKey.ECC.P256 as P256
 import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
 import Crypto.Hash.Algorithms
+
+{-
+  HOW TO USE
+  ==========
+  To Register
+    - Generate yourself a Request, consisting of your site/service uri, u2f version number, etc, send it to the client.
+    - Assuming the client returned a registration response (Registration), parse it with parseRegistration.
+    - Use verifyRegistration Request Registration to verify that the Registration is valid. (Challenge bytes match, were signed by key described in cert)
+    - Stash the publicKey and keyHandle somewhere, so you can use them for signin. verifyRegistration returns a Request, with added keyHandle, for convenience.
+  To Signin
+    - Make a Request.
+    - Parse whatever signin json you have with parseSignin.
+    - Dig out the publicKey for the relevant keyHandle.
+    - Verify signin with verifySignin publicKey Request Signin
+-}
 
 -- Curve
 ourCurve = getCurveByName SEC_p256r1
@@ -197,12 +209,9 @@ parseSignatureData :: BS.ByteString -> Either HuffError SignatureData
 parseSignatureData s = Right $ runGet unpackSignatureData ( LBS.fromStrict $ decodeLenient s)
 
 parseSignature :: BS.ByteString -> Either HuffError ECDSA.Signature
-parseSignature possibleSig = case (decodeASN1' DER (possibleSig)) of
-  Right sigParse -> Right $ ECDSA.Signature (fromIntVal $ sigParse !! 1) (fromIntVal $ sigParse !! 2)
-  Left _ -> Left SignatureParseError
-
---getSigninSignatureBase appId userPresenceFlag counter clientData = sigBase
---  where sigBase = BS.concat([SHA256.hash(BS.pack appId), userPresenceFlag, counter, SHA256.hash(decodeLenient $ BS.pack clientData)])
+parseSignature possibleSig = case (decodeASN1' DER possibleSig) of
+  Right ([_, IntVal r, IntVal s, _]) -> Right $ ECDSA.Signature r s
+  _ -> Left SignatureParseError
 
 getSigninSignatureBase :: Request -> Signin -> SignatureData -> Either HuffError BS.ByteString
 getSigninSignatureBase request signin signatureData = do
@@ -212,6 +221,7 @@ getSigninSignatureBase request signin signatureData = do
   clientData <- pure $ encodeUtf8 $ signin_clientData signin
   Right $ BS.concat([SHA256.hash(appId), userPresenceFlag, counter, SHA256.hash(decodeLenient clientData)])
 
+parsePublicKey :: BS.ByteString -> Maybe ECDSA.PublicKey
 parsePublicKey keyByteString = case P256.pointFromBinary keyByteString of
   CryptoPassed key -> Just $ ECDSA.PublicKey ourCurve $ Point (fst $ P256.pointToIntegers key) (snd $ P256.pointToIntegers key)
   CryptoFailed err -> Nothing
@@ -219,7 +229,7 @@ parsePublicKey keyByteString = case P256.pointFromBinary keyByteString of
 -- URL-friendly base64 encoding may or may not contain padding. Delete it here
 -- https://tools.ietf.org/html/rfc4648#section-3.2
 formatOutputBase64 :: BS.ByteString -> T.Text
-formatOutputBase64 byteString = T.replace "=" "" (decodeUtf8 $ encode byteString)
+formatOutputBase64 byteString = T.replace (T.pack "=") (T.pack "") (decodeUtf8 $ encode byteString)
 
 verifySignature :: BS.ByteString -> ECDSA.PublicKey -> ECDSA.Signature -> Bool
 verifySignature sigBase pubKey signature = ECDSA.verify Crypto.Hash.Algorithms.SHA256 pubKey signature sigBase
@@ -229,6 +239,7 @@ huffComparator firstThing secondThing theError = case (firstThing == secondThing
     True -> Right True
     False -> Left theError
 
+unpackRegistrationData :: Get RegistrationData
 unpackRegistrationData = do
   reserved <- getByteString 1
   publicKey <- getByteString 65
@@ -238,12 +249,14 @@ unpackRegistrationData = do
   sign <- unpackASN1
   return $ RegistrationData reserved publicKey keyHandle cert sign
 
+unpackSignatureData :: Get SignatureData
 unpackSignatureData = do
   userPresenceFlag <- getByteString 1
   counter <- getByteString 4
   signature <- unpackASN1
   return $ SignatureData userPresenceFlag counter signature
 
+unpackASN1 :: Get BS.ByteString
 unpackASN1 = do
   asnPadding <- getWord8
   asnLen <- getWord8
@@ -259,5 +272,3 @@ unpackASN1 = do
     else do
       asnBody <- getByteString (fromIntegral asnLen)
       return $ BS.concat([pack([asnPadding, asnLen]), asnBody])
-
-fromIntVal (IntVal x) = x
