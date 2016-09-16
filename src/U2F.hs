@@ -1,6 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Huff where
+module U2F where
 
 import GHC.Generics
 import Data.Bits
@@ -54,7 +54,7 @@ import Crypto.Hash.Algorithms
 ourCurve = getCurveByName SEC_p256r1
 
 -- Errors
-data HuffError =
+data U2FError =
   RegistrationParseError |
   RegistrationDataParseError |
   RegistrationCertificateParseError |
@@ -102,20 +102,20 @@ data RegistrationData = RegistrationData {
   registrationData_signature :: BS.ByteString
 } deriving (Show, Generic)
 
-parseRequest :: String -> Either HuffError Request
+parseRequest :: String -> Either U2FError Request
 parseRequest x = case (Data.Aeson.decode (LBS.pack x) :: Maybe Request) of
   Just request -> Right request
   Nothing -> Left RequestParseError
 
-parseRegistration :: String -> Either HuffError Registration
+parseRegistration :: String -> Either U2FError Registration
 parseRegistration x = case (Data.Aeson.decode (LBS.pack x) :: Maybe Registration) of
   Just registration -> Right registration
   Nothing -> Left RegistrationParseError
 
-parseRegistrationData :: BS.ByteString -> Either HuffError RegistrationData
+parseRegistrationData :: BS.ByteString -> Either U2FError RegistrationData
 parseRegistrationData r = Right $ runGet unpackRegistrationData ( LBS.fromStrict $ decodeLenient r)
 
-getPubKeyFromCertificate :: BS.ByteString -> Either HuffError ECDSA.PublicKey
+getPubKeyFromCertificate :: BS.ByteString -> Either U2FError ECDSA.PublicKey
 getPubKeyFromCertificate cert = case (decodeASN1' DER cert) of
   Right certParse -> case (findPubKey certParse) of
     Just key -> Right key
@@ -123,15 +123,19 @@ getPubKeyFromCertificate cert = case (decodeASN1' DER cert) of
   Left _ -> Left RegistrationCertificateParseError
 
 findPubKey :: Foldable t => t ASN1 -> Maybe ECDSA.PublicKey
-findPubKey parsedCert = case (find (\(BitString (BitArray len _)) -> len == 520) parsedCert) of
+findPubKey parsedCert = case (find pubKeyShape parsedCert) of
   Just (BitString (BitArray len x)) -> parsePublicKey $ BS.tail x
   _ -> Nothing
+
+pubKeyShape :: ASN1 -> Bool
+pubKeyShape (BitString (BitArray len _)) = len == 520
+pubKeyShape _ = False
 
 getSignatureBase :: BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString
 getSignatureBase appId clientData keyHandle publicKey = sigBase
   where sigBase = BS.concat([BS.pack "\NUL", SHA256.hash(appId), SHA256.hash(decodeLenient clientData), keyHandle, publicKey])
 
-getSignatureBaseFromRegistration :: Registration -> RegistrationData -> Either HuffError BS.ByteString
+getSignatureBaseFromRegistration :: Registration -> RegistrationData -> Either U2FError BS.ByteString
 getSignatureBaseFromRegistration registration registrationData = do
   appId <- pure $ BS.pack $ T.unpack $ registration_appId registration
   clientData <- pure $ BS.pack $ T.unpack $ registration_clientData registration
@@ -139,9 +143,9 @@ getSignatureBaseFromRegistration registration registrationData = do
   publicKey <- pure $ registrationData_publicKey registrationData
   pure $ getSignatureBase appId clientData keyHandle publicKey
 
-verifyRegistration :: Request -> Registration -> Either HuffError Request
+verifyRegistration :: Request -> Registration -> Either U2FError Request
 verifyRegistration request registration = do
-  challengesEqual <- huffComparator (challenge request) (registration_challenge registration) ChallengeMismatchError
+  challengesEqual <- u2fComparator (challenge request) (registration_challenge registration) ChallengeMismatchError
   registrationData <- parseRegistrationData $ encodeUtf8 $ registration_registrationData registration
   pkey <- getPubKeyFromCertificate $ registrationData_certificate registrationData
   signature <- parseSignature $ registrationData_signature registrationData
@@ -178,20 +182,20 @@ data SignatureData = SignatureData {
   signatureData_signature :: BS.ByteString
 } deriving (Show, Generic)
 
-parseSignin :: String -> Either HuffError Signin
+parseSignin :: String -> Either U2FError Signin
 parseSignin x = case (Data.Aeson.decode (LBS.pack x) :: Maybe Signin) of
   Just signin -> Right signin
   Nothing -> Left SigninParseError
 
-parseClientData :: BS.ByteString -> Either HuffError ClientData
+parseClientData :: BS.ByteString -> Either U2FError ClientData
 parseClientData x = case (Data.Aeson.decode (LBS.fromStrict $ decodeLenient x) :: Maybe ClientData) of
   Just clientData -> Right clientData
   Nothing -> Left ClientDataParseError
 
-verifySignin :: BS.ByteString -> Request -> Signin -> Either HuffError Bool
+verifySignin :: BS.ByteString -> Request -> Signin -> Either U2FError Bool
 verifySignin savedPubkey request signin = do
   clientData <- parseClientData $ encodeUtf8 $ signin_clientData signin
-  challengesEqual <- huffComparator (challenge request) (clientData_challenge clientData) ChallengeMismatchError
+  challengesEqual <- u2fComparator (challenge request) (clientData_challenge clientData) ChallengeMismatchError
   signatureData <- parseSignatureData $ encodeUtf8 $ signin_signatureData signin
   signature <- parseSignature $ signatureData_signature signatureData
   signatureBase <- getSigninSignatureBase request signin signatureData
@@ -205,15 +209,15 @@ verifySignin savedPubkey request signin = do
 
 -- Other stuff
 
-parseSignatureData :: BS.ByteString -> Either HuffError SignatureData
+parseSignatureData :: BS.ByteString -> Either U2FError SignatureData
 parseSignatureData s = Right $ runGet unpackSignatureData ( LBS.fromStrict $ decodeLenient s)
 
-parseSignature :: BS.ByteString -> Either HuffError ECDSA.Signature
+parseSignature :: BS.ByteString -> Either U2FError ECDSA.Signature
 parseSignature possibleSig = case (decodeASN1' DER possibleSig) of
   Right ([_, IntVal r, IntVal s, _]) -> Right $ ECDSA.Signature r s
   _ -> Left SignatureParseError
 
-getSigninSignatureBase :: Request -> Signin -> SignatureData -> Either HuffError BS.ByteString
+getSigninSignatureBase :: Request -> Signin -> SignatureData -> Either U2FError BS.ByteString
 getSigninSignatureBase request signin signatureData = do
   appId <- pure $ encodeUtf8 $ appId request
   userPresenceFlag <- pure $ signatureData_userPresenceFlag signatureData
@@ -234,8 +238,8 @@ formatOutputBase64 byteString = T.replace (T.pack "=") (T.pack "") (decodeUtf8 $
 verifySignature :: BS.ByteString -> ECDSA.PublicKey -> ECDSA.Signature -> Bool
 verifySignature sigBase pubKey signature = ECDSA.verify Crypto.Hash.Algorithms.SHA256 pubKey signature sigBase
 
-huffComparator :: (Eq a) => a -> a -> HuffError -> Either HuffError Bool
-huffComparator firstThing secondThing theError = case (firstThing == secondThing) of
+u2fComparator :: (Eq a) => a -> a -> U2FError -> Either U2FError Bool
+u2fComparator firstThing secondThing theError = case (firstThing == secondThing) of
     True -> Right True
     False -> Left theError
 
