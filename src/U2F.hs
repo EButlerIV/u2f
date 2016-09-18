@@ -5,8 +5,6 @@ module U2F where
 import GHC.Generics
 import Data.Bits
 
-import Data.Either.Unwrap
-
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Types
 import qualified Data.ByteString.Lazy.Char8 as LBS
