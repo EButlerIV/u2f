@@ -35,13 +35,13 @@ library
   hs-source-dirs:      src
   default-language:    Haskell2010
 
-test-suite test
+test-suite hspec-suite
   type:       exitcode-stdio-1.0
   main-is:    tests/test.hs
   ghc-options: -Wall
   default-language:    Haskell2010
   build-depends:  base
-                , hspec
+                , hspec >= 2.2 && < 2.3
                 , u2f
                 , text
                 , bytestring
