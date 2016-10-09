@@ -1,28 +1,28 @@
 {-# LANGUAGE DeriveGeneric #-}
 
 module U2F where
+import U2F.Types
 
-import GHC.Generics
 import Data.Bits
 
+import Data.ASN1.BitArray
+import Data.ASN1.Encoding
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Types
+
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.ByteString.Char8 as BS
 
-import Data.Text.Encoding (encodeUtf8)
-import Data.Aeson ((.:), (.:?), decode, FromJSON(..),
-  ToJSON(..), Value(..), genericParseJSON, defaultOptions)
+import Data.Aeson (decode)
 import Data.Binary.Get
-import Data.Aeson.Types
-import Control.Applicative ((<$>), (<*>))
-import Data.ASN1.BitArray
-import Data.ASN1.Encoding
+
 import Data.ByteString (pack)
 import Data.ByteString.Base64.URL (encode, decodeLenient)
+
+import Data.List
+
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8, decodeUtf8)
-import Data.List
 
 import qualified Crypto.Hash.SHA256 as SHA256
 
@@ -49,56 +49,8 @@ import Crypto.Hash.Algorithms
 -}
 
 -- Curve
+ourCurve :: Curve
 ourCurve = getCurveByName SEC_p256r1
-
--- Errors
-data U2FError =
-  RegistrationParseError |
-  RegistrationDataParseError |
-  RegistrationCertificateParseError |
-  PubKeyParsingError |
-  SignatureParseError |
-  ChallengeMismatchError |
-  FailedVerificationError |
-  SigninParseError |
-  ClientDataParseError |
-  RequestParseError
-  deriving (Show, Eq)
-
-data Request = Request {
-  appId :: T.Text,
-  version :: T.Text,
-  challenge :: T.Text,
-  keyHandle :: Maybe T.Text
-} deriving (Show, Generic, Eq)
-instance FromJSON Request
-instance ToJSON Request
-
--- Registration Flow --
-data Registration = Registration {
-  registration_registrationData :: T.Text,
-  registration_challenge :: T.Text,
-  registration_version :: Maybe T.Text,
-  registration_appId :: T.Text,
-  registration_clientData :: T.Text,
-  registration_sessionID :: Maybe T.Text
-} deriving (Show, Generic)
-instance ToJSON Registration where
-  toJSON = genericToJSON defaultOptions {
-                fieldLabelModifier = Prelude.drop 13 }
-
-instance FromJSON Registration where
-  parseJSON = genericParseJSON defaultOptions {
-                fieldLabelModifier = Prelude.drop 13 }
-
-
-data RegistrationData = RegistrationData {
-  registrationData_reserved :: BS.ByteString,
-  registrationData_publicKey :: BS.ByteString,
-  registrationData_keyHandle :: BS.ByteString,
-  registrationData_certificate :: BS.ByteString,
-  registrationData_signature :: BS.ByteString
-} deriving (Show, Generic)
 
 parseRequest :: String -> Either U2FError Request
 parseRequest x = case (Data.Aeson.decode (LBS.pack x) :: Maybe Request) of
@@ -122,7 +74,8 @@ getPubKeyFromCertificate cert = case (decodeASN1' DER cert) of
 
 findPubKey :: Foldable t => t ASN1 -> Maybe ECDSA.PublicKey
 findPubKey parsedCert = case (find pubKeyShape parsedCert) of
-  Just (BitString (BitArray len x)) -> parsePublicKey $ BS.tail x
+  -- Eventually check to make sure this is not compressed, in right format
+  Just (BitString (BitArray _ x)) -> parsePublicKey $ BS.tail x
   _ -> Nothing
 
 pubKeyShape :: ASN1 -> Bool
@@ -143,7 +96,7 @@ getSignatureBaseFromRegistration registration registrationData = do
 
 verifyRegistration :: Request -> Registration -> Either U2FError Request
 verifyRegistration request registration = do
-  challengesEqual <- u2fComparator (challenge request) (registration_challenge registration) ChallengeMismatchError
+  _ <- u2fComparator (challenge request) (registration_challenge registration) ChallengeMismatchError
   registrationData <- parseRegistrationData $ encodeUtf8 $ registration_registrationData registration
   pkey <- getPubKeyFromCertificate $ registrationData_certificate registrationData
   signature <- parseSignature $ registrationData_signature registrationData
@@ -151,34 +104,6 @@ verifyRegistration request registration = do
   case (verifySignature signatureBase pkey signature) of
     True -> Right (request {keyHandle = Just $ formatOutputBase64 $ registrationData_keyHandle registrationData})
     False -> Left FailedVerificationError
-
--- Signin Flow --
-data Signin = Signin {
-  signin_keyHandle :: T.Text,
-  signin_clientData :: T.Text,
-  signin_signatureData :: T.Text
-} deriving (Show, Generic, Eq)
-
-instance FromJSON Signin where
-  parseJSON = genericParseJSON defaultOptions {
-                fieldLabelModifier = Prelude.drop 7 }
-
-data ClientData = ClientData {
-  clientData_typ :: T.Text,
-  clientData_challenge :: T.Text,
-  clientData_origin :: T.Text,
-  clientData_cid_pubkey :: T.Text
-  } deriving (Show, Generic, Eq)
-
-instance FromJSON ClientData where
-  parseJSON = genericParseJSON defaultOptions {
-                fieldLabelModifier = Prelude.drop 11 }
-
-data SignatureData = SignatureData {
-  signatureData_userPresenceFlag :: BS.ByteString,
-  signatureData_counter :: BS.ByteString,
-  signatureData_signature :: BS.ByteString
-} deriving (Show, Generic)
 
 parseSignin :: String -> Either U2FError Signin
 parseSignin x = case (Data.Aeson.decode (LBS.pack x) :: Maybe Signin) of
@@ -193,7 +118,7 @@ parseClientData x = case (Data.Aeson.decode (LBS.fromStrict $ decodeLenient x) :
 verifySignin :: BS.ByteString -> Request -> Signin -> Either U2FError Bool
 verifySignin savedPubkey request signin = do
   clientData <- parseClientData $ encodeUtf8 $ signin_clientData signin
-  challengesEqual <- u2fComparator (challenge request) (clientData_challenge clientData) ChallengeMismatchError
+  _ <- u2fComparator (challenge request) (clientData_challenge clientData) ChallengeMismatchError
   signatureData <- parseSignatureData $ encodeUtf8 $ signin_signatureData signin
   signature <- parseSignature $ signatureData_signature signatureData
   signatureBase <- getSigninSignatureBase request signin signatureData
@@ -226,7 +151,7 @@ getSigninSignatureBase request signin signatureData = do
 parsePublicKey :: BS.ByteString -> Maybe ECDSA.PublicKey
 parsePublicKey keyByteString = case P256.pointFromBinary keyByteString of
   CryptoPassed key -> Just $ ECDSA.PublicKey ourCurve $ Point (fst $ P256.pointToIntegers key) (snd $ P256.pointToIntegers key)
-  CryptoFailed err -> Nothing
+  CryptoFailed _ -> Nothing
 
 -- URL-friendly base64 encoding may or may not contain padding. Delete it here
 -- https://tools.ietf.org/html/rfc4648#section-3.2

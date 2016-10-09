@@ -19,6 +19,7 @@ tested-with: GHC == 7.6.3, GHC == 7.8.4, GHC == 7.10.3, GHC == 8.0.1, GHC == 8.0
 
 library
   exposed-modules:     U2F
+                     , U2F.Types
   ghc-options: -Wall
   -- other-modules:
   -- other-extensions:
@@ -37,11 +38,13 @@ library
 
 test-suite hspec-suite
   type:       exitcode-stdio-1.0
-  main-is:    tests/test.hs
+  main-is:    test.hs
   ghc-options: -Wall
+  hs-source-dirs: tests
   default-language:    Haskell2010
   build-depends:  base
                 , hspec >= 2.2 && < 2.3
                 , u2f
                 , text
+                , either-unwrap
                 , bytestring
