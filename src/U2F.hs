@@ -1,6 +1,40 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module U2F where
+{- |
+  __HOW TO USE__
+
+  To Register
+
+    - Generate yourself a Request, consisting of your site/service uri, u2f version number, etc, send it to the client.
+
+    - Assuming the client returned a registration response (Registration), parse it with parseRegistration.
+
+    - Use verifyRegistration Request Registration to verify that the Registration is valid. (Challenge bytes match, were signed by key described in cert)
+
+    - Stash the publicKey and keyHandle somewhere, so you can use them for signin. verifyRegistration returns a Request, with added keyHandle, for convenience.
+
+  To Signin
+
+    - Make a Request.
+
+    - Parse whatever signin json you have with parseSignin.
+
+    - Dig out the publicKey for the relevant keyHandle.
+
+    - Verify signin with verifySignin publicKey Request Signin
+
+-}
+module U2F
+  (
+    parseRequest,
+    parseRegistration,
+    parseRegistrationData,
+    verifyRegistration,
+    parseSignin,
+    parseClientData,
+    verifySignin,
+    formatOutputBase64
+  )where
 import U2F.Types
 
 import Data.Bits
@@ -33,35 +67,23 @@ import qualified Crypto.PubKey.ECC.P256 as P256
 import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
 import Crypto.Hash.Algorithms
 
-{-
-  HOW TO USE
-  ==========
-  To Register
-    - Generate yourself a Request, consisting of your site/service uri, u2f version number, etc, send it to the client.
-    - Assuming the client returned a registration response (Registration), parse it with parseRegistration.
-    - Use verifyRegistration Request Registration to verify that the Registration is valid. (Challenge bytes match, were signed by key described in cert)
-    - Stash the publicKey and keyHandle somewhere, so you can use them for signin. verifyRegistration returns a Request, with added keyHandle, for convenience.
-  To Signin
-    - Make a Request.
-    - Parse whatever signin json you have with parseSignin.
-    - Dig out the publicKey for the relevant keyHandle.
-    - Verify signin with verifySignin publicKey Request Signin
--}
-
--- Curve
+-- | The U2F Spec (currently) exclusively supports use of the SEC p256r Curve
 ourCurve :: Curve
 ourCurve = getCurveByName SEC_p256r1
 
+-- | Parses Registration or Signin Request JSON
 parseRequest :: String -> Either U2FError Request
 parseRequest x = case (Data.Aeson.decode (LBS.pack x) :: Maybe Request) of
   Just request -> Right request
   Nothing -> Left RequestParseError
 
+-- | Parses Registration response JSON
 parseRegistration :: String -> Either U2FError Registration
 parseRegistration x = case (Data.Aeson.decode (LBS.pack x) :: Maybe Registration) of
   Just registration -> Right registration
   Nothing -> Left RegistrationParseError
 
+-- | Parses base64-encoded bytestring in Registration response
 parseRegistrationData :: BS.ByteString -> Either U2FError RegistrationData
 parseRegistrationData r = Right $ runGet unpackRegistrationData ( LBS.fromStrict $ decodeLenient r)
 
@@ -94,6 +116,7 @@ getSignatureBaseFromRegistration registration registrationData = do
   publicKey <- pure $ registrationData_publicKey registrationData
   pure $ getSignatureBase appId clientData keyHandle publicKey
 
+-- | Verifies that Registration is a valid response to the Request
 verifyRegistration :: Request -> Registration -> Either U2FError Request
 verifyRegistration request registration = do
   _ <- u2fComparator (challenge request) (registration_challenge registration) ChallengeMismatchError
@@ -105,16 +128,19 @@ verifyRegistration request registration = do
     True -> Right (request {keyHandle = Just $ formatOutputBase64 $ registrationData_keyHandle registrationData})
     False -> Left FailedVerificationError
 
+-- | Parses Signin response JSON
 parseSignin :: String -> Either U2FError Signin
 parseSignin x = case (Data.Aeson.decode (LBS.pack x) :: Maybe Signin) of
   Just signin -> Right signin
   Nothing -> Left SigninParseError
 
+-- | Parses base64-encoded client data bytestring inside Signin response
 parseClientData :: BS.ByteString -> Either U2FError ClientData
 parseClientData x = case (Data.Aeson.decode (LBS.fromStrict $ decodeLenient x) :: Maybe ClientData) of
   Just clientData -> Right clientData
   Nothing -> Left ClientDataParseError
 
+-- | Verifies that Signin response is valid given saved pubkey bytestring, request
 verifySignin :: BS.ByteString -> Request -> Signin -> Either U2FError Bool
 verifySignin savedPubkey request signin = do
   clientData <- parseClientData $ encodeUtf8 $ signin_clientData signin
@@ -129,8 +155,6 @@ verifySignin savedPubkey request signin = do
   case (verifySignature signatureBase publicKey signature) of
     True -> Right True
     False -> Left FailedVerificationError
-
--- Other stuff
 
 parseSignatureData :: BS.ByteString -> Either U2FError SignatureData
 parseSignatureData s = Right $ runGet unpackSignatureData ( LBS.fromStrict $ decodeLenient s)
@@ -153,8 +177,8 @@ parsePublicKey keyByteString = case P256.pointFromBinary keyByteString of
   CryptoPassed key -> Just $ ECDSA.PublicKey ourCurve $ Point (fst $ P256.pointToIntegers key) (snd $ P256.pointToIntegers key)
   CryptoFailed _ -> Nothing
 
--- URL-friendly base64 encoding may or may not contain padding. Delete it here
--- https://tools.ietf.org/html/rfc4648#section-3.2
+-- | URL-friendly base64 encoding may or may not contain padding. (https://tools.ietf.org/html/rfc4648#section-3.2).
+--   We remove it here.
 formatOutputBase64 :: BS.ByteString -> T.Text
 formatOutputBase64 byteString = T.replace (T.pack "=") (T.pack "") (decodeUtf8 $ encode byteString)
 
