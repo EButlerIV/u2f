@@ -5,8 +5,8 @@ module U2F.Types where
 import GHC.Generics
 import qualified Data.Text as T
 import qualified Data.ByteString.Char8 as BS
-import Data.Aeson ((.:), (.:?), decode, FromJSON(..),
-  ToJSON(..), Value(..), genericParseJSON, genericToJSON,  defaultOptions)
+import Data.Aeson (FromJSON(..),
+  ToJSON(..), genericParseJSON, genericToJSON,  defaultOptions)
 import Data.Aeson.Types (fieldLabelModifier)
 
 data U2FError =

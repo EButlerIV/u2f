@@ -104,17 +104,16 @@ pubKeyShape :: ASN1 -> Bool
 pubKeyShape (BitString (BitArray len _)) = len == 520
 pubKeyShape _ = False
 
-getSignatureBase :: BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString
-getSignatureBase appId clientData keyHandle publicKey = sigBase
-  where sigBase = BS.concat([BS.pack "\NUL", SHA256.hash(appId), SHA256.hash(decodeLenient clientData), keyHandle, publicKey])
+formatSignatureBase :: BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString
+formatSignatureBase _appId clientData _keyHandle publicKey = sigBase
+  where sigBase = BS.concat([BS.pack "\NUL", SHA256.hash(_appId), SHA256.hash(decodeLenient clientData), _keyHandle, publicKey])
 
-getSignatureBaseFromRegistration :: Registration -> RegistrationData -> Either U2FError BS.ByteString
-getSignatureBaseFromRegistration registration registrationData = do
-  appId <- pure $ BS.pack $ T.unpack $ registration_appId registration
-  clientData <- pure $ BS.pack $ T.unpack $ registration_clientData registration
-  keyHandle <- pure $ registrationData_keyHandle registrationData
-  publicKey <- pure $ registrationData_publicKey registrationData
-  pure $ getSignatureBase appId clientData keyHandle publicKey
+getSignatureBaseFromRegistration :: Registration -> RegistrationData -> BS.ByteString
+getSignatureBaseFromRegistration registration registrationData = formatSignatureBase aId clientData kH publicKey
+  where aId = encodeUtf8 $ registration_appId registration
+        clientData = encodeUtf8 $ registration_clientData registration
+        kH = registrationData_keyHandle registrationData
+        publicKey = registrationData_publicKey registrationData
 
 -- | Verifies that Registration is a valid response to the Request
 verifyRegistration :: Request -> Registration -> Either U2FError Request
@@ -123,7 +122,7 @@ verifyRegistration request registration = do
   registrationData <- parseRegistrationData $ encodeUtf8 $ registration_registrationData registration
   pkey <- getPubKeyFromCertificate $ registrationData_certificate registrationData
   signature <- parseSignature $ registrationData_signature registrationData
-  signatureBase <- getSignatureBaseFromRegistration registration registrationData
+  let signatureBase = getSignatureBaseFromRegistration registration registrationData
   case (verifySignature signatureBase pkey signature) of
     True -> Right (request {keyHandle = Just $ formatOutputBase64 $ registrationData_keyHandle registrationData})
     False -> Left FailedVerificationError
@@ -147,7 +146,7 @@ verifySignin savedPubkey request signin = do
   _ <- u2fComparator (challenge request) (clientData_challenge clientData) ChallengeMismatchError
   signatureData <- parseSignatureData $ encodeUtf8 $ signin_signatureData signin
   signature <- parseSignature $ signatureData_signature signatureData
-  signatureBase <- getSigninSignatureBase request signin signatureData
+  let signatureBase = getSigninSignatureBase request signin signatureData
   -- So Gross. TODO: write function that checks first byte for compression state, parses each pubkey format
   publicKey <- case (parsePublicKey $ BS.tail $ savedPubkey) of
     Just key -> Right key
@@ -164,13 +163,12 @@ parseSignature possibleSig = case (decodeASN1' DER possibleSig) of
   Right ([_, IntVal r, IntVal s, _]) -> Right $ ECDSA.Signature r s
   _ -> Left SignatureParseError
 
-getSigninSignatureBase :: Request -> Signin -> SignatureData -> Either U2FError BS.ByteString
-getSigninSignatureBase request signin signatureData = do
-  appId <- pure $ encodeUtf8 $ appId request
-  userPresenceFlag <- pure $ signatureData_userPresenceFlag signatureData
-  counter <- pure $ signatureData_counter signatureData
-  clientData <- pure $ encodeUtf8 $ signin_clientData signin
-  Right $ BS.concat([SHA256.hash(appId), userPresenceFlag, counter, SHA256.hash(decodeLenient clientData)])
+getSigninSignatureBase :: Request -> Signin -> SignatureData -> BS.ByteString
+getSigninSignatureBase request signin signatureData = BS.concat([SHA256.hash(aId), userPresenceFlag, counter, SHA256.hash(decodeLenient clientData)])
+  where aId = encodeUtf8 $ appId request
+        userPresenceFlag = signatureData_userPresenceFlag signatureData
+        counter = signatureData_counter signatureData
+        clientData = encodeUtf8 $ signin_clientData signin
 
 parsePublicKey :: BS.ByteString -> Maybe ECDSA.PublicKey
 parsePublicKey keyByteString = case P256.pointFromBinary keyByteString of
@@ -195,10 +193,10 @@ unpackRegistrationData = do
   reserved <- getByteString 1
   publicKey <- getByteString 65
   keyHandleLen <- getWord8
-  keyHandle <- getByteString $ fromIntegral keyHandleLen
+  kH <- getByteString $ fromIntegral keyHandleLen
   cert <- unpackASN1
   sign <- unpackASN1
-  return $ RegistrationData reserved publicKey keyHandle cert sign
+  return $ RegistrationData reserved publicKey kH cert sign
 
 unpackSignatureData :: Get SignatureData
 unpackSignatureData = do
