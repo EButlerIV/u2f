@@ -140,7 +140,7 @@ parseClientData x = case (Data.Aeson.decode (LBS.fromStrict $ decodeLenient x) :
   Nothing -> Left ClientDataParseError
 
 -- | Verifies that Signin response is valid given saved pubkey bytestring, request.
--- | Warning!: Expects uncompressed public key.
+--   Warning!: Expects uncompressed public key.
 verifySignin :: BS.ByteString -> Request -> Signin -> Either U2FError Bool
 verifySignin savedPubkey request signin = do
   clientData <- parseClientData $ encodeUtf8 $ signin_clientData signin
