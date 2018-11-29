@@ -2,7 +2,7 @@
 -- see http://haskell.org/cabal/users-guide/
 
 name:                u2f
-version:             0.1.0.1
+version:             0.1.0.2
 synopsis:            Haskell Universal Two Factor helper toolbox library thing
 description:         Library useful for server-side U2F Registration and Signin flows.
 homepage:            https://github.com/EButlerIV/u2f
