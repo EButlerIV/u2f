@@ -139,7 +139,8 @@ parseClientData x = case (Data.Aeson.decode (LBS.fromStrict $ decodeLenient x) :
   Just clientData -> Right clientData
   Nothing -> Left ClientDataParseError
 
--- | Verifies that Signin response is valid given saved pubkey bytestring, request
+-- | Verifies that Signin response is valid given saved pubkey bytestring, request.
+-- | Warning!: Expects uncompressed public key.
 verifySignin :: BS.ByteString -> Request -> Signin -> Either U2FError Bool
 verifySignin savedPubkey request signin = do
   clientData <- parseClientData $ encodeUtf8 $ signin_clientData signin
@@ -147,7 +148,9 @@ verifySignin savedPubkey request signin = do
   signatureData <- parseSignatureData $ encodeUtf8 $ signin_signatureData signin
   signature <- parseSignature $ signatureData_signature signatureData
   let signatureBase = getSigninSignatureBase request signin signatureData
-  -- So Gross. TODO: write function that checks first byte for compression state, parses each pubkey format
+  -- TODO: write function that checks first byte for compression state, parses each pubkey format
+  -- Technically, only uncompressed keys are allowed by the FIDO U2F spec, but it's possible that
+  -- a compressed key could be added to user data via other means.
   publicKey <- case (parsePublicKey $ BS.tail $ savedPubkey) of
     Just key -> Right key
     Nothing -> Left PubKeyParsingError
